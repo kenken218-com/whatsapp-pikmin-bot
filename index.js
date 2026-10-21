@@ -3,11 +3,14 @@ const { GoogleGenAI } = require('@google/genai');
 const pino = require('pino');
 const express = require('express');
 const qrcode = require('qrcode');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 let latestQR = '';
+const AUTH_DIR = path.join(__dirname, 'auth_info_qr');
 
 app.get('/', (req, res) => {
     if (latestQR) {
@@ -36,7 +39,6 @@ app.listen(PORT, () => {
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-// 🤖 香港專屬皮克敏 AI System Prompt
 const PIKMIN_SYSTEM_PROMPT = `
 你是一位專屬於香港《皮克敏 Bloom》(Pikmin Bloom) 玩家群組的智慧助手，名叫「皮克敏小管家」。
 你的任務是協助香港玩家解答遊戲相關問題、提供本地攻略建議、說明活動規則，並保持親切熱情的態度。
@@ -44,17 +46,17 @@ const PIKMIN_SYSTEM_PROMPT = `
 `;
 
 async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_qr');
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     
     const sock = makeWASocket({
         logger: pino({ level: 'silent' }),
         auth: state,
-        browser: Browsers.macOS('Desktop'),
+        browser: Browsers.ubuntu('Chrome'), // 改用 Ubuntu Chrome 模擬，提升雲端相容性
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
-        keepAliveIntervalMs: 15000,
+        keepAliveIntervalMs: 25000,
         markOnlineOnConnect: true,
-        syncFullHistory: true // 強制完整同步
+        syncFullHistory: false
     });
 
     sock.ev.on('connection.update', async (update) => {
@@ -71,13 +73,19 @@ async function connectToWhatsApp() {
             const statusCode = lastDisconnect?.error?.output?.statusCode;
             console.log(`❌ 連線關閉，錯誤代碼: ${statusCode}`);
             
-            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-            if (shouldReconnect) {
-                console.log('⏳ 3 秒後自動重新嘗試連線...');
-                setTimeout(() => connectToWhatsApp(), 3000);
-            } else {
-                console.log('🚫 裝置已被登出，請清除登入狀態後重試。');
+            // 若遇到 428 或 401，代表 Session 已失效，強制刪除舊憑證以重新抓取 QR Code
+            if (statusCode === 428 || statusCode === DisconnectReason.loggedOut || statusCode === 401) {
+                console.log('🚨 憑證已失效，正在清除憑證資料夾以重新產生 QR Code...');
+                try {
+                    fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+                } catch (e) {
+                    console.error('清除憑證失敗:', e);
+                }
             }
+
+            console.log('⏳ 3 秒後自動重新嘗試連線...');
+            setTimeout(() => connectToWhatsApp(), 3000);
+
         } else if (connection === 'open') {
             latestQR = '';
             console.log('\n========================================');
@@ -103,16 +111,13 @@ async function connectToWhatsApp() {
 
         if (!messageContent) return;
 
-        // 🔍 在 Render Logs 印出任何進來的訊息與來源 JID，確保通訊正常
         console.log(`\n📢 收到來自 [${remoteJid}] 的訊息: "${messageContent}"`);
 
-        // 測試指令：打 !id 會直接回傳當前群組的 JID
         if (messageContent === '!id' || messageContent === '！id') {
             await sock.sendMessage(remoteJid, { text: `🔑 本群組 ID：${remoteJid}` }, { quoted: m });
             return;
         }
 
-        // 🤖 只要訊息開頭是 ! 或 ！，不設任何群組限制，直接呼叫 Gemini AI 回答！
         const isCommand = messageContent.startsWith('!') || messageContent.startsWith('！');
 
         if (isCommand && messageContent.length > 1) {
