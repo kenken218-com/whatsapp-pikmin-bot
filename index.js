@@ -6,6 +6,15 @@ const qrcode = require('qrcode');
 const fs = require('fs');
 const path = require('path');
 
+// 🛡️ 全域防崩潰保護網
+process.on('uncaughtException', (err) => {
+    console.error('💥 [Uncaught Exception] 捕捉到未預期的嚴重錯誤:', err);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+    console.error('💥 [Unhandled Rejection] 捕捉到未處理的 Promise 拒絕:', reason);
+});
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -13,15 +22,15 @@ let latestQR = '';
 let isConnected = false;
 const AUTH_DIR = path.join(__dirname, 'auth_info_qr');
 
-// 🛡️ 四個主要群組 ID 定義
+// 🛡️ 群組 ID 定義（已新增「日日食」欄位，請先透過 !id 查詢填入）
 const GROUPS = {
     MUSHROOM: '120363411620446782@g.us',
     CAFE: '120363429454802566@g.us',
     FLYER: '120363409915956994@g.us',
-    ADMIN: '120363428639707848@g.us'
+    ADMIN: '120363428639707848@g.us',
+    RICE: '請在這裡填入日日食的JID@g.us' // 待會透過 !id 抓取
 };
 
-// 🌐 Express 網頁伺服器
 app.get('/', (req, res) => {
     if (latestQR) {
         res.send(`
@@ -48,7 +57,7 @@ app.listen(PORT, () => {
     console.log(`🌐 [Web Server] 網頁伺服器已成功在 Port ${PORT} 上啟動`);
 });
 
-// 💓 心跳機制：每 30 秒確認容器運作正常
+// 💓 心跳機制：每 30 秒確認容器運作
 setInterval(() => {
     const memory = process.memoryUsage();
     const rssMB = (memory.rss / 1024 / 1024).toFixed(2);
@@ -67,7 +76,19 @@ const PIKMIN_SYSTEM_PROMPT = `
 
 async function connectToWhatsApp() {
     console.log('🚀 [Init] 正在讀取登入憑證與建立 Socket 連線...');
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
+    
+    let state, saveCreds;
+    try {
+        const auth = await useMultiFileAuthState(AUTH_DIR);
+        state = auth.state;
+        saveCreds = auth.saveCreds;
+    } catch (e) {
+        console.error('⚠️ 讀取認證資料夾失敗，正在重新建立:', e);
+        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+        const auth = await useMultiFileAuthState(AUTH_DIR);
+        state = auth.state;
+        saveCreds = auth.saveCreds;
+    }
     
     const sock = makeWASocket({
         logger: pino({ level: 'silent' }),
@@ -83,115 +104,119 @@ async function connectToWhatsApp() {
     sock.ev.on('creds.update', saveCreds);
 
     sock.ev.process(async (events) => {
-        if (events['connection.update']) {
-            const update = events['connection.update'];
-            const { connection, lastDisconnect, qr } = update;
-            
-            console.log('🔄 [Connection Update]', { 
-                connection, 
-                hasQR: !!qr, 
-                statusCode: lastDisconnect?.error?.output?.statusCode 
-            });
-
-            if (qr) {
-                latestQR = await qrcode.toDataURL(qr);
-                console.log('📱 [QR Code] 已產生新的 QR Code，請至網頁掃描！');
-            }
-
-            if (connection === 'close') {
-                isConnected = false;
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                console.log(`❌ [Connection Closed] 連線斷開，錯誤代碼: ${statusCode}`);
+        try {
+            if (events['connection.update']) {
+                const update = events['connection.update'];
+                const { connection, lastDisconnect, qr } = update;
                 
-                if (statusCode === 428 || statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-                    console.log('🚨 [Auth Clean] 憑證無效或衝突，清除憑證資料夾以重置...');
-                    try {
-                        fs.rmSync(AUTH_DIR, { recursive: true, force: true });
-                    } catch (e) {
-                        console.error('清除憑證資料夾失敗:', e);
-                    }
+                console.log('🔄 [Connection Update]', { 
+                    connection, 
+                    hasQR: !!qr, 
+                    statusCode: lastDisconnect?.error?.output?.statusCode 
+                });
+
+                if (qr) {
+                    latestQR = await qrcode.toDataURL(qr);
+                    console.log('📱 [QR Code] 已產生新的 QR Code，請至網頁掃描！');
                 }
 
-                console.log('⏳ [Reconnect] 3 秒後自動重新嘗試連線...');
-                setTimeout(() => connectToWhatsApp(), 3000);
-
-            } else if (connection === 'open') {
-                latestQR = '';
-                isConnected = true;
-                console.log('\n========================================');
-                console.log('✅ 皮克敏 AI 機器人 (香港版) 已成功連線上線！');
-                console.log('========================================\n');
-
-                try {
-                    const groups = await sock.groupFetchAllParticipating();
-                    console.log(`📂 [Groups Loaded] 成功同步，目前參與群組數量: ${Object.keys(groups).length}`);
-                } catch (err) {
-                    console.error('⚠️ [Groups Load Error] 抓取群組清單失敗:', err);
-                }
-            }
-        }
-
-        if (events['messages.upsert']) {
-            const upsert = events['messages.upsert'];
-            console.log(`🔥 [Event: messages.upsert] 收到訊息推播！型態: ${upsert.type}, 訊息筆數: ${upsert.messages.length}`);
-
-            for (const m of upsert.messages) {
-                if (!m.message || m.key.fromMe) continue;
-
-                const remoteJid = m.key.remoteJid;
-                const messageContent = (
-                    m.message.conversation || 
-                    m.message.extendedTextMessage?.text || 
-                    m.message.imageMessage?.caption || 
-                    ''
-                ).trim();
-
-                console.log(`📢 [New Message] 來自 JID: ${remoteJid}`);
-                console.log(`💬 [Message Text]: "${messageContent}"`);
-
-                if (!messageContent) continue;
-
-                // 測試指令: !id (任何地方打都能回傳 JID 讓你確認)
-                if (messageContent === '!id' || messageContent === '！id') {
-                    await sock.sendMessage(remoteJid, { text: `🔑 本群組 ID：${remoteJid}` }, { quoted: m });
-                    continue;
-                }
-
-                // 🔒 權限控制：只有 CAFE 和 ADMIN 群組才允許 AI 回應
-                const isAllowedAIgroup = (remoteJid === GROUPS.CAFE || remoteJid === GROUPS.ADMIN);
-                
-                if (!isAllowedAIgroup) {
-                    console.log(`🛡️ [AI Blocked] 來自非 AI 授權群組，略過 AI 回應。`);
-                    continue;
-                }
-
-                // AI 觸發（只有 Coffee 和 Admin 群組且帶有驚嘆號才會到這裡）
-                const isCommand = messageContent.startsWith('!') || messageContent.startsWith('！');
-                if (isCommand && messageContent.length > 1) {
-                    const query = messageContent.substring(1).trim();
-                    console.log(`🤖 [AI Start] 準備在授權群組呼叫 Gemini AI，內容: "${query}"`);
+                if (connection === 'close') {
+                    isConnected = false;
+                    const statusCode = lastDisconnect?.error?.output?.statusCode;
+                    console.log(`❌ [Connection Closed] 連線斷開，錯誤代碼: ${statusCode}`);
                     
-                    try {
-                        await sock.sendPresenceUpdate('composing', remoteJid);
-                        
-                        const response = await ai.models.generateContent({
-                            model: 'gemini-2.5-flash',
-                            contents: query,
-                            config: {
-                                systemInstruction: PIKMIN_SYSTEM_PROMPT
-                            }
-                        });
+                    if (statusCode === 428 || statusCode === DisconnectReason.loggedOut || statusCode === 401) {
+                        console.log('🚨 [Auth Clean] 憑證失效，自動清除資料夾...');
+                        try {
+                            fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+                        } catch (e) {
+                            console.error('清除憑證失敗:', e);
+                        }
+                    }
 
-                        console.log('✨ [AI Success] 成功回傳 AI 結果，準備發送至 WhatsApp...');
-                        await sock.sendMessage(remoteJid, { text: response.text }, { quoted: m });
+                    console.log('⏳ [Reconnect] 3 秒後自動重新嘗試連線...');
+                    setTimeout(() => connectToWhatsApp(), 3000);
+
+                } else if (connection === 'open') {
+                    latestQR = '';
+                    isConnected = true;
+                    console.log('\n========================================');
+                    console.log('✅ 皮克敏 AI 機器人 (香港版) 已成功連線上線！');
+                    console.log('========================================\n');
+
+                    try {
+                        const groups = await sock.groupFetchAllParticipating();
+                        console.log(`📂 [Groups Loaded] 目前參與群組數量: ${Object.keys(groups).length}`);
                     } catch (err) {
-                        console.error('❌ [AI Error] Gemini API 發生錯誤:', err);
-                        await sock.sendMessage(remoteJid, { 
-                            text: '🌱 哎呀，皮克敏小管家頭先個腦袋塞咗一下，不如陣間再試過啦！' 
-                        }, { quoted: m });
+                        console.error('⚠️ [Groups Load Error] 抓取群組清單失敗:', err);
                     }
                 }
             }
+
+            if (events['messages.upsert']) {
+                const upsert = events['messages.upsert'];
+
+                for (const m of upsert.messages) {
+                    if (!m.message || m.key.fromMe) continue;
+
+                    const remoteJid = m.key.remoteJid;
+                    
+                    // 印出所有收到的訊息 JID，方便你隨時對照新群組
+                    const messageContent = (
+                        m.message.conversation || 
+                        m.message.extendedTextMessage?.text || 
+                        m.message.imageMessage?.caption || 
+                        ''
+                    ).trim();
+
+                    if (!messageContent) continue;
+
+                    console.log(`📢 [New Message] 來自 JID: ${remoteJid} | 內容: "${messageContent}"`);
+
+                    // 任何群組只要打 !id 都能立刻回傳當前群組的 JID
+                    if (messageContent === '!id' || messageContent === '！id') {
+                        await sock.sendMessage(remoteJid, { text: `🔑 本群組 ID：${remoteJid}` }, { quoted: m });
+                        continue;
+                    }
+
+                    // 🔒 權限控制：只有 CAFE、ADMIN、以及日日食(RICE) 允許 AI 回應
+                    const isAllowedAIgroup = (
+                        remoteJid === GROUPS.CAFE || 
+                        remoteJid === GROUPS.ADMIN || 
+                        remoteJid === GROUPS.RICE
+                    );
+                    
+                    if (!isAllowedAIgroup) continue;
+
+                    const isCommand = messageContent.startsWith('!') || messageContent.startsWith('！');
+                    if (isCommand && messageContent.length > 1) {
+                        const query = messageContent.substring(1).trim();
+                        console.log(`🤖 [AI Start] 準備呼叫 Gemini AI，內容: "${query}"`);
+                        
+                        try {
+                            await sock.sendPresenceUpdate('composing', remoteJid);
+                            
+                            const response = await ai.models.generateContent({
+                                model: 'gemini-2.5-flash',
+                                contents: query,
+                                config: {
+                                    systemInstruction: PIKMIN_SYSTEM_PROMPT
+                                }
+                            });
+
+                            console.log('✨ [AI Success] 成功回傳 AI 結果！');
+                            await sock.sendMessage(remoteJid, { text: response.text }, { quoted: m });
+                        } catch (err) {
+                            console.error('❌ [AI Error] Gemini API 錯誤:', err);
+                            await sock.sendMessage(remoteJid, { 
+                                text: '🌱 哎呀，皮克敏小管家頭先個腦袋塞咗一下，不如陣間再試過啦！' 
+                            }, { quoted: m });
+                        }
+                    }
+                }
+            }
+        } catch (eventErr) {
+            console.error('⚠️ [Event Processing Error] 處理事件時發生例外:', eventErr);
         }
     });
 }
