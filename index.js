@@ -2,14 +2,33 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers
 const { GoogleGenAI } = require('@google/genai');
 const pino = require('pino');
 const express = require('express');
-const qrcodeTerminal = require('qrcode-terminal'); // 引入終端機 QR Code 顯示套件
+const qrcode = require('qrcode'); // 用來產生網頁圖片 QR Code
 
-// 🌐 啟動簡單的 Express 網頁伺服器
+// 🌐 啟動 Express 網頁伺服器，並用來直接顯示 QR Code 給手機掃描
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+let latestQR = '';
+
 app.get('/', (req, res) => {
-    res.send('🌱 Pikmin Bot is running smoothly!');
+    if (latestQR) {
+        // 如果還沒登入，直接在網頁上渲染大張的 QR Code 圖片讓手機掃描
+        res.send(`
+            <html>
+                <head>
+                    <title>WhatsApp Bot QR Code</title>
+                    <meta http-equiv="refresh" content="5"> <!-- 每5秒自動重新整理取得最新QR -->
+                </head>
+                <body style="text-align: center; margin-top: 50px; font-family: sans-serif;">
+                    <h2>🌱 請使用 WhatsApp 掃描下方 QR Code 登入</h2>
+                    <p>（畫面每 5 秒會自動更新，若已成功連線請重新整理此頁）</p>
+                    <img src="${latestQR}" alt="QR Code" style="width: 300px; height: 300px; border: 5px solid #ccc; border-radius: 10px;" />
+                </body>
+            </html>
+        `);
+    } else {
+        res.send('<h2>🌱 Pikmin Bot 已成功連線，目前運行中！</h2>');
+    }
 });
 
 app.listen(PORT, () => {
@@ -55,9 +74,9 @@ async function connectToWhatsApp() {
         console.log('🔄 連線狀態更新:', { connection, hasQR: !!qr, statusCode: lastDisconnect?.error?.output?.statusCode });
 
         if (qr) {
-            console.log('\n📱 正在 Render Logs 產生終端機 QR Code，請用手機掃描：');
-            // 直接在 Render Logs 畫面印出黑白方塊 QR Code
-            qrcodeTerminal.generate(qr, { small: true });
+            // 將 QR 碼轉為網頁可直接顯示的圖片格式 (Data URL)
+            latestQR = await qrcode.toDataURL(qr);
+            console.log('\n📱 已將最新 QR Code 轉為網頁圖片，請直接打開你的 Render 網址進行掃描！\n');
         }
 
         if (connection === 'close') {
@@ -72,6 +91,7 @@ async function connectToWhatsApp() {
                 console.log('🚫 裝置已被登出，請清除登入狀態後重試。');
             }
         } else if (connection === 'open') {
+            latestQR = ''; // 登入成功後清空 QR 畫面
             console.log('\n========================================');
             console.log('✅ 皮克敏 AI 機器人 (香港版) 已成功連線上線！');
             console.log('========================================\n');
