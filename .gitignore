@@ -1,0 +1,6 @@
+node_modules/
+auth_info_qr/
+auth_info_baileys/
+.env
+qrcode.png
+.DS_Store

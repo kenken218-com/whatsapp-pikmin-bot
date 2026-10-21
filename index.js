@@ -1,9 +1,10 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers } = require('@whiskeysockets/baileys');
 const { GoogleGenAI } = require('@google/genai');
 const pino = require('pino');
 const express = require('express');
+const qrcode = require('qrcode');
 
-// 🌐 啟動簡單的 Express 網頁伺服器，用來應付 Render 的 Port 掃描與 UptimeRobot 心跳監控
+// 🌐 啟動簡單的 Express 網頁伺服器
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -15,16 +16,16 @@ app.listen(PORT, () => {
     console.log(`🌐 網頁伺服器已成功在 Port ${PORT} 上啟動`);
 });
 
-// 🔑 從環境變數安全讀取 API Key
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+// 🔑 從環境變數安全讀取 API Key (若讀不到可直接填入雙引號內測試)
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-// 📌 你的群組 ID 設定（已新增 Admin 群組）
+// 📌 你的群組 ID 設定
 const GROUPS = {
-    MUSHROOM: '120363411620446782@g.us', // 🍄 菇勇者 (禁聊天/僅指令)
-    CAFE: '120363429454802566@g.us',     // ☕️ 皮克敏悠閒咖啡室 (AI 智慧問答/聊天)
-    FLYER: '120363409915956994@g.us',    // 🍑 飛人專用 (禁聊天/僅指令)
-    ADMIN: '120363428639707848@g.us' // 🛡️ Admin 管理員群組 (AI 智慧問答/聊天)
+    MUSHROOM: '120363411620446782@g.us', // 🍄 菇勇者
+    CAFE: '120363429454802566@g.us',     // ☕️ 皮克敏悠閒咖啡室
+    FLYER: '120363409915956994@g.us',    // 🍑 飛人專用
+    ADMIN: '120363428639707848@g.us'     // 🛡️ Admin 管理員群組
 };
 
 // 🤖 香港專屬皮克敏 AI System Prompt
@@ -35,41 +36,45 @@ const PIKMIN_SYSTEM_PROMPT = `
 `;
 
 async function connectToWhatsApp() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys2');
+    const { state, saveCreds } = await useMultiFileAuthState('auth_info_qr');
     
     const sock = makeWASocket({
         logger: pino({ level: 'silent' }),
         auth: state,
-        browser: ['Chrome (Linux)', 'Chrome', '120.0.0.0']
+        // 🔄 改用 Windows Desktop 瀏覽器特徵，避開 428 錯誤防護
+        browser: Browsers.windows('Desktop'),
+        connectTimeoutMs: 60000,
+        defaultQueryTimeoutMs: 60000,
+        keepAliveIntervalMs: 25000,
+        markOnlineOnConnect: true,
+        syncFullHistory: false
     });
 
-    // 📱 電話號碼配對碼機制
-    if (!sock.authState.creds.registered) {
-        // ⚠️ 請把下面引號內的號碼改成你的機器人 WhatsApp 電話號碼（例如 "85212345678"）
-        const phoneNumber = "85256142683"; 
+    sock.ev.on('connection.update', async (update) => {
+        const { connection, lastDisconnect, qr } = update;
         
-        setTimeout(async () => {
-            try {
-                const code = await sock.requestPairingCode(phoneNumber);
-                console.log('\n========================================');
-                console.log(`📱 你的 WhatsApp 配對碼是: ${code}`);
-                console.log('請在手機 WhatsApp 點選「已連結的裝置」 -> 「連結裝置」 -> 「改用電話號碼連結」輸入此代碼！');
-                console.log('========================================\n');
-            } catch (err) {
-                console.error('❌ 請求配對碼失敗:', err);
-            }
-        }, 50000);
-    }
+        console.log('🔄 連線狀態更新:', { connection, hasQR: !!qr, statusCode: lastDisconnect?.error?.output?.statusCode });
 
-    sock.ev.on('connection.update', (update) => {
-        const { connection, lastDisconnect } = update;
+        if (qr) {
+            console.log('\n📱 成功取得 QR Code！正在產生高畫質圖片...');
+            try {
+                await qrcode.toFile('qrcode.png', qr, { width: 400, margin: 2 });
+                console.log('✅ 「qrcode.png」圖片已更新！請到資料夾打開它並用手機掃描！');
+            } catch (err) {
+                console.error('❌ 產生 QR Code 圖片失敗:', err);
+            }
+        }
+
         if (connection === 'close') {
-            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log('connection closed, reconnecting:', shouldReconnect);
+            const statusCode = lastDisconnect?.error?.output?.statusCode;
+            console.log(`❌ 連線關閉，錯誤代碼: ${statusCode}`);
+            
+            const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
             if (shouldReconnect) {
-                connectToWhatsApp();
+                console.log('⏳ 3 秒後自動重新嘗試連線...');
+                setTimeout(() => connectToWhatsApp(), 3000);
             } else {
-                console.log('❌ 帳號已被登出，請清除授權資料夾重新配對。');
+                console.log('🚫 裝置已被登出，請刪除 auth_info_qr 資料夾後重試。');
             }
         } else if (connection === 'open') {
             console.log('\n========================================');
@@ -86,7 +91,6 @@ async function connectToWhatsApp() {
 
         const remoteJid = m.key.remoteJid;
         
-        // 🔍 廣泛解析訊息文字（相容半形 ! 與全形 ！）
         const messageContent = (
             m.message.conversation || 
             m.message.extendedTextMessage?.text || 
@@ -99,13 +103,11 @@ async function connectToWhatsApp() {
         console.log(`[收到訊息] 群組: ${remoteJid}`);
         console.log(`[訊息內容]: "${messageContent}"`);
 
-        // 🎯 1. 基礎指令 (!id)
         if (messageContent === '!id' || messageContent === '！id') {
             await sock.sendMessage(remoteJid, { text: `🔑 本群組 ID：${remoteJid}` }, { quoted: m });
             return;
         }
 
-        // 🎯 2. ☕️ 咖啡室 與 🛡️ Admin 群組共用 AI 智慧問答邏輯
         if (remoteJid === GROUPS.CAFE || remoteJid === GROUPS.ADMIN) {
             const isCommand = messageContent.startsWith('!') || messageContent.startsWith('！');
 
@@ -116,7 +118,6 @@ async function connectToWhatsApp() {
                 try {
                     await sock.sendPresenceUpdate('composing', remoteJid);
                     
-                    // ⏱️ 建立 10 秒逾時保護機制
                     const aiPromise = ai.models.generateContent({
                         model: 'gemini-2.5-flash',
                         contents: query,
@@ -137,8 +138,6 @@ async function connectToWhatsApp() {
                     console.error('❌ Gemini API 發生錯誤或逾時:', err);
                     await sock.sendMessage(remoteJid, { text: '🌱 哎呀，皮克敏小管家頭先個腦袋塞咗一下，不如陣間再試過啦！' }, { quoted: m });
                 }
-            } else {
-                console.log('ℹ️ 訊息非 ! 開頭，忽略不處理');
             }
         }
     });
