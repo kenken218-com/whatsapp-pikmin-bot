@@ -23,10 +23,10 @@ const AUTH_DIR = path.join(__dirname, 'auth_info_qr');
 
 const GROUPS = {
     MUSHROOM: '120363411620446782@g.us',
-    CAFE: '120363429454802566@g.us',
+    CAFE: '120363429454802566@g.us', // AI 授權群組
     FLYER: '120363409915956994@g.us',
-    ADMIN: '120363428639707848@g.us',
-    RICE: '120363428639707848@g.us' // 暫時代替，後續可改
+    ADMIN: '120363428639707848@g.us', // AI 授權群組
+    RICE: '120363428639707848@g.us'   // 已加入 AI 授權群組
 };
 
 app.get('/', (req, res) => {
@@ -54,7 +54,7 @@ app.listen(PORT, () => {
     console.log(`🌐 [Web Server] 網頁伺服器已啟動於 Port ${PORT}`);
 });
 
-// 💓 縮短為每 15 秒一次心跳，確保主執行緒有沒有被卡死
+// 💓 每 15 秒一次心跳，確保主執行緒有沒有被卡死
 setInterval(() => {
     const memory = process.memoryUsage();
     const rssMB = (memory.rss / 1024 / 1024).toFixed(1);
@@ -158,6 +158,7 @@ async function connectToWhatsApp() {
                         continue;
                     }
 
+                    // 已將 CAFE、ADMIN、RICE 群組全部納入 AI 授權名單
                     const isAllowedAIgroup = (
                         remoteJid === GROUPS.CAFE || 
                         remoteJid === GROUPS.ADMIN || 
@@ -177,17 +178,24 @@ async function connectToWhatsApp() {
                         try {
                             await sock.sendPresenceUpdate('composing', remoteJid);
                             
-                            const response = await ai.models.generateContent({
+                            // 15 秒 Timeout 防卡死機制
+                            const timeoutPromise = new Promise((_, reject) =>
+                                setTimeout(() => reject(new Error("AI API 請求超時 (Timeout 15秒)")), 15000)
+                            );
+
+                            const aiPromise = ai.models.generateContent({
                                 model: 'gemini-2.5-flash',
                                 contents: query,
                                 config: { systemInstruction: PIKMIN_SYSTEM_PROMPT }
                             });
 
+                            const response = await Promise.race([aiPromise, timeoutPromise]);
+
                             const replyText = response.text || '🌱 收到！';
                             console.log('✨ [AI 回應成功] 傳送中...');
                             await sock.sendMessage(remoteJid, { text: replyText }, { quoted: m });
                         } catch (err) {
-                            console.error('❌ [AI 呼叫失敗]:', err.message);
+                            console.error('❌ [AI 呼叫失敗]:', err.message || err);
                             await sock.sendMessage(remoteJid, { 
                                 text: '🌱 哎呀，皮克敏小管家頭先個腦袋塞咗一下，不如陣間再試過啦！' 
                             }, { quoted: m });
