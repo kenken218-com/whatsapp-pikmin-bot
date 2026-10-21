@@ -79,7 +79,7 @@ async function connectToWhatsApp() {
                     await sock.sendPresenceUpdate('composing', remoteJid);
                     
                     const response = await ai.models.generateContent({
-                        model: 'gemini-2.5-flash',
+                        model: 'gemini-3.8-flash',
                         contents: query,
                         config: {
                             systemInstruction: PIKMIN_SYSTEM_PROMPT
