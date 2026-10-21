@@ -118,7 +118,7 @@ async function connectToWhatsApp() {
                     
                     // ⏱️ 建立 10 秒逾時保護機制
                     const aiPromise = ai.models.generateContent({
-                        model: 'gemini-3.8-flash',
+                        model: 'gemini-2.5-flash',
                         contents: query,
                         config: {
                             systemInstruction: PIKMIN_SYSTEM_PROMPT
@@ -126,7 +126,7 @@ async function connectToWhatsApp() {
                     });
 
                     const timeoutPromise = new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error('AI Request Timeout')), 10000)
+                        setTimeout(() => reject(new Error('AI Request Timeout')), 50000)
                     );
 
                     const response = await Promise.race([aiPromise, timeoutPromise]);
