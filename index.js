@@ -2,7 +2,7 @@ const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, Browsers
 const { GoogleGenAI } = require('@google/genai');
 const pino = require('pino');
 const express = require('express');
-const qrcode = require('qrcode');
+const qrcodeTerminal = require('qrcode-terminal'); // 引入終端機 QR Code 顯示套件
 
 // 🌐 啟動簡單的 Express 網頁伺服器
 const app = express();
@@ -16,7 +16,7 @@ app.listen(PORT, () => {
     console.log(`🌐 網頁伺服器已成功在 Port ${PORT} 上啟動`);
 });
 
-// 🔑 從環境變數安全讀取 API Key (若讀不到可直接填入雙引號內測試)
+// 🔑 從環境變數安全讀取 API Key
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -41,7 +41,6 @@ async function connectToWhatsApp() {
     const sock = makeWASocket({
         logger: pino({ level: 'silent' }),
         auth: state,
-        // 🔄 改用 Windows Desktop 瀏覽器特徵，避開 428 錯誤防護
         browser: Browsers.windows('Desktop'),
         connectTimeoutMs: 60000,
         defaultQueryTimeoutMs: 60000,
@@ -56,13 +55,9 @@ async function connectToWhatsApp() {
         console.log('🔄 連線狀態更新:', { connection, hasQR: !!qr, statusCode: lastDisconnect?.error?.output?.statusCode });
 
         if (qr) {
-            console.log('\n📱 成功取得 QR Code！正在產生高畫質圖片...');
-            try {
-                await qrcode.toFile('qrcode.png', qr, { width: 400, margin: 2 });
-                console.log('✅ 「qrcode.png」圖片已更新！請到資料夾打開它並用手機掃描！');
-            } catch (err) {
-                console.error('❌ 產生 QR Code 圖片失敗:', err);
-            }
+            console.log('\n📱 正在 Render Logs 產生終端機 QR Code，請用手機掃描：');
+            // 直接在 Render Logs 畫面印出黑白方塊 QR Code
+            qrcodeTerminal.generate(qr, { small: true });
         }
 
         if (connection === 'close') {
@@ -74,7 +69,7 @@ async function connectToWhatsApp() {
                 console.log('⏳ 3 秒後自動重新嘗試連線...');
                 setTimeout(() => connectToWhatsApp(), 3000);
             } else {
-                console.log('🚫 裝置已被登出，請刪除 auth_info_qr 資料夾後重試。');
+                console.log('🚫 裝置已被登出，請清除登入狀態後重試。');
             }
         } else if (connection === 'open') {
             console.log('\n========================================');
