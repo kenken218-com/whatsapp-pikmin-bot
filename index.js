@@ -46,7 +46,7 @@ async function connectToWhatsApp() {
     // 📱 電話號碼配對碼機制
     if (!sock.authState.creds.registered) {
         // ⚠️ 請把下面引號內的號碼改成你的機器人 WhatsApp 電話號碼（例如 "85212345678"）
-        const phoneNumber = "85251180937"; 
+        const phoneNumber = "85256142683"; 
         
         setTimeout(async () => {
             try {
