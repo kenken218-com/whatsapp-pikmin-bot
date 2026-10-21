@@ -58,7 +58,7 @@ async function connectToWhatsApp() {
             } catch (err) {
                 console.error('❌ 請求配對碼失敗:', err);
             }
-        }, 4000);
+        }, 50000);
     }
 
     sock.ev.on('connection.update', (update) => {
