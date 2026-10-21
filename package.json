@@ -9,6 +9,7 @@
   "dependencies": {
     "@google/genai": "latest",
     "@whiskeysockets/baileys": "latest",
+    "express": "^5.3.0",
     "pino": "^9.0.0"
   },
   "engines": {

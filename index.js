@@ -1,8 +1,21 @@
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const { GoogleGenAI } = require('@google/genai');
 const pino = require('pino');
+const express = require('express');
 
-// 🔑 從環境變數安全讀取 API Key (之後在 Koyeb 後台設定)
+// 🌐 啟動簡單的 Express 網頁伺服器，用來應付 Render 的 Port 掃描與 UptimeRobot 心跳監控
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+app.get('/', (req, res) => {
+    res.send('🌱 Pikmin Bot is running smoothly!');
+});
+
+app.listen(PORT, () => {
+    console.log(`🌐 網頁伺服器已成功在 Port ${PORT} 上啟動`);
+});
+
+// 🔑 從環境變數安全讀取 API Key
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
@@ -78,7 +91,8 @@ async function connectToWhatsApp() {
                 try {
                     await sock.sendPresenceUpdate('composing', remoteJid);
                     
-                    const response = await ai.models.generateContent({
+                    // ⏱️ 建立 10 秒逾時保護機制，防止 API 卡住無限等待
+                    const aiPromise = ai.models.generateContent({
                         model: 'gemini-3.8-flash',
                         contents: query,
                         config: {
@@ -86,11 +100,17 @@ async function connectToWhatsApp() {
                         }
                     });
 
+                    const timeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('AI Request Timeout')), 10000)
+                    );
+
+                    const response = await Promise.race([aiPromise, timeoutPromise]);
+
                     console.log('✨ AI 回應成功，傳送至群組...');
                     await sock.sendMessage(remoteJid, { text: response.text }, { quoted: m });
                 } catch (err) {
-                    console.error('❌ Gemini API 發生錯誤:', err);
-                    await sock.sendMessage(remoteJid, { text: '🌱 抱歉，皮克敏小管家剛才腦袋塞住了，請稍後再試一次！' }, { quoted: m });
+                    console.error('❌ Gemini API 發生錯誤或逾時:', err);
+                    await sock.sendMessage(remoteJid, { text: '🌱 抱歉，皮克敏小管家剛才連線逾時或腦袋塞住了，請稍後再試一次！' }, { quoted: m });
                 }
             } else {
                 console.log('ℹ️ 訊息非 ! 開頭，忽略不處理');
