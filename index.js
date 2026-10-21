@@ -21,12 +21,13 @@ let latestQR = '';
 let isConnected = false;
 const AUTH_DIR = path.join(__dirname, 'auth_info_qr');
 
+// ⚠️ 正確修復群組 ID 對應
 const GROUPS = {
     MUSHROOM: '120363411620446782@g.us',
-    CAFE: '120363429454802566@g.us', // AI 授權群組
+    CAFE: '120363429454802566@g.us',
     FLYER: '120363409915956994@g.us',
-    ADMIN: '120363428639707848@g.us', // AI 授權群組
-    RICE: '120363428639707848@g.us'   // 已加入 AI 授權群組
+    ADMIN: '120363428639707848@g.us',
+    RICE: '120363410988345256@g.us' // 修正：精準對應你的 45256 群組！
 };
 
 app.get('/', (req, res) => {
@@ -54,7 +55,6 @@ app.listen(PORT, () => {
     console.log(`🌐 [Web Server] 網頁伺服器已啟動於 Port ${PORT}`);
 });
 
-// 💓 每 15 秒一次心跳，確保主執行緒有沒有被卡死
 setInterval(() => {
     const memory = process.memoryUsage();
     const rssMB = (memory.rss / 1024 / 1024).toFixed(1);
@@ -137,12 +137,13 @@ async function connectToWhatsApp() {
 
             if (events['messages.upsert']) {
                 const upsert = events['messages.upsert'];
-                console.log(`📥 [收到訊息事件] 類型: ${upsert.type}, 筆數: ${upsert.messages.length}`);
 
                 for (const m of upsert.messages) {
-                    if (!m.message || m.key.fromMe) continue;
+                    if (!m.message) continue;
 
                     const remoteJid = m.key.remoteJid;
+                    const isFromMe = m.key.fromMe;
+
                     const messageContent = (
                         m.message.conversation || 
                         m.message.extendedTextMessage?.text || 
@@ -150,15 +151,16 @@ async function connectToWhatsApp() {
                         ''
                     ).trim();
 
-                    if (!messageContent) continue;
-                    console.log(`💬 [訊息內容] 來自 ${remoteJid}: "${messageContent}"`);
+                    // 最前線除錯 Log：不管是不是自己發的，一收到就印出來
+                    console.log(`📩 [進線測試] 來自: ${remoteJid} | 是否自己: ${isFromMe} | 內容: "${messageContent}"`);
+
+                    if (isFromMe || !messageContent) continue;
 
                     if (messageContent === '!id' || messageContent === '！id') {
                         await sock.sendMessage(remoteJid, { text: `🔑 本群組 ID：\n${remoteJid}` }, { quoted: m });
                         continue;
                     }
 
-                    // 已將 CAFE、ADMIN、RICE 群組全部納入 AI 授權名單
                     const isAllowedAIgroup = (
                         remoteJid === GROUPS.CAFE || 
                         remoteJid === GROUPS.ADMIN || 
@@ -173,12 +175,11 @@ async function connectToWhatsApp() {
                     const isCommand = messageContent.startsWith('!') || messageContent.startsWith('！');
                     if (isCommand && messageContent.length > 1) {
                         const query = messageContent.substring(1).trim();
-                        console.log(`🤖 [AI 請求觸發] 查詢內容: "${query}"`);
+                        console.log(`🤖 [AI 請求發送中...] 內容: "${query}"`);
                         
                         try {
                             await sock.sendPresenceUpdate('composing', remoteJid);
                             
-                            // 15 秒 Timeout 防卡死機制
                             const timeoutPromise = new Promise((_, reject) =>
                                 setTimeout(() => reject(new Error("AI API 請求超時 (Timeout 15秒)")), 15000)
                             );
@@ -192,14 +193,17 @@ async function connectToWhatsApp() {
                             const response = await Promise.race([aiPromise, timeoutPromise]);
 
                             const replyText = response.text || '🌱 收到！';
-                            console.log('✨ [AI 回應成功] 傳送中...');
+                            console.log('✨ [AI 回應成功] 準備發送回群組...');
                             await sock.sendMessage(remoteJid, { text: replyText }, { quoted: m });
+                            console.log('🎉 [完成] 訊息已順利回覆！');
                         } catch (err) {
-                            console.error('❌ [AI 呼叫失敗]:', err.message || err);
+                            console.error('❌ [AI 呼叫失敗/超時]:', err.message || err);
                             await sock.sendMessage(remoteJid, { 
                                 text: '🌱 哎呀，皮克敏小管家頭先個腦袋塞咗一下，不如陣間再試過啦！' 
                             }, { quoted: m });
                         }
+                    } else {
+                        console.log(`ℹ️ [未觸發 AI] 訊息未包含 ! 或 ！ 前綴`);
                     }
                 }
             }
